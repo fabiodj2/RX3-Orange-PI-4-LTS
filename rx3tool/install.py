@@ -17,6 +17,7 @@ from .ui import Failure, info, ok, say, stage
 
 PLAYER = 'root/pdj/rbp-pi'
 SHIM = 'lib/fbshim.so'
+PROBE = 'usr/local/bin/rx3-arm32-probe'
 
 
 def load_script(name):
@@ -57,7 +58,8 @@ class Installer:
             raise Failure(f'{self.runtime} is not an assembled runtime', 'Run ./rx3 assemble first.')
         shim = self.build / 'fbshim.so'
         clock = self.build / 'pi-clock.bin'
-        missing = [str(p) for p in (shim, clock) if not p.is_file()]
+        probe = self.build / 'rx3-arm32-probe'
+        missing = [str(p) for p in (shim, clock, probe) if not p.is_file()]
         if missing:
             raise Failure('Build outputs are missing: ' + ', '.join(missing), 'Run ./rx3 build first.')
         if player_pids(self.runtime):
@@ -66,14 +68,19 @@ class Installer:
         tempo25 = self.config.flag('firmware', 'tempo_range_25')
         player = build_player(self.runtime, clock.read_bytes(), tempo25)
         shim_data = shim.read_bytes()
+        probe_data = probe.read_bytes()
         if len(shim_data) < 52 or not shim_data.startswith(b'\x7fELF\x01\x01\x01') or shim_data[18:20] != b'\x28\x00':
             raise Failure(f'{shim} is not a 32-bit ARM shared library', 'Rebuild with ./rx3 build.')
+        if len(probe_data) < 52 or not probe_data.startswith(b'\x7fELF\x01\x01\x01') or probe_data[18:20] != b'\x28\x00':
+            raise Failure(f'{probe} is not a 32-bit ARM executable', 'Rebuild with ./rx3 build.')
         variant = '6/10/16/25 % tempo ranges' if tempo25 else 'original 6/10/16/WIDE tempo ranges'
         if self.dry_run:
-            say(f'  [dry-run] would write {PLAYER} ({variant}) and {SHIM}; previous copies kept as .previous')
+            say(f'  [dry-run] would write {PLAYER}, {SHIM} and {PROBE}; previous copies kept as .previous')
             return
         with Tree(self.runtime) as tree:
-            for relative, data, mode in ((PLAYER, player, 0o755), (SHIM, shim_data, 0o755)):
+            tree.mkdir('usr/local/bin', 0o755)
+            for relative, data, mode in ((PLAYER, player, 0o755), (SHIM, shim_data, 0o755),
+                                         (PROBE, probe_data, 0o755)):
                 current = tree.lstat(relative)
                 if current is not None:
                     with tree.open_read(relative) as handle:
@@ -85,7 +92,8 @@ class Installer:
                 tree.write(relative, data, mode)
                 ok(f'Installed {relative}')
         marker.update({'installed': time.time(), 'player_pi_sha256': sha256(player),
-                       'shim_sha256': sha256(shim_data), 'tempo_range_25': tempo25})
+                       'shim_sha256': sha256(shim_data), 'probe_sha256': sha256(probe_data),
+                       'tempo_range_25': tempo25})
         write_marker(self.runtime, marker)
         stage('Installed')
         info(f'Player: RX3 1.19 with Pi patches, {variant}')

@@ -337,6 +337,54 @@ class Launcher:
         return command + [str(self.runtime), '/bin/busybox', 'env', 'LD_PRELOAD=/lib/fbshim.so',
                           '/root/pdj/rbp-pi', '-a']
 
+    def probe_command(self):
+        uid, gid = self.config.uid(), self.config.gid()
+        groups = ','.join(str(g) for g in self.config.groups())
+        command = ['prlimit', '--rtprio=95', '--memlock=unlimited', '--',
+                   'chroot', f'--userspec={uid}:{gid}']
+        if groups:
+            command.append(f'--groups={groups}')
+        return command + [str(self.runtime), '/usr/local/bin/rx3-arm32-probe',
+                          self.config.get('audio', 'card')]
+
+    def execute_probe(self):
+        stage('Running the ARM32 compatibility probe')
+        result = self.sudo(self.probe_command(), check=False, capture=True)
+        if self.dry_run:
+            return
+        if result.stdout:
+            say(result.stdout.rstrip())
+        if result.stderr:
+            say(result.stderr.rstrip())
+        if result.returncode:
+            raise Failure(f'ARM32 compatibility probe failed (status {result.returncode})',
+                          'Fix every FAIL above before starting RX3.')
+        ok('ARM32 runtime, pthread/futex, realtime, mlock, mqueue and ALSA passed')
+
+    def probe(self):
+        """Run the full ARM32 ABI probe with the player's identity and device mounts."""
+        self.require_user()
+        self.config.require_valid()
+        if platform.machine() not in ('aarch64', 'arm64', 'armv7l', 'armv8l'):
+            raise Failure('The full ARM32 probe must run on the target ARM board')
+        if player_pids(self.runtime) or any(self.helpers().values()):
+            raise Failure('RX3 is running', 'Run ./rx3 stop before the compatibility probe.')
+        marker = read_marker(self.runtime)
+        probe = self.rt('usr/local/bin/rx3-arm32-probe')
+        if marker is None or not probe.is_file():
+            raise Failure('The ARM32 compatibility probe is not installed',
+                          'Run ./rx3 build && ./rx3 install first.')
+        if runtime_mounts(self.runtime):
+            raise Failure('The runtime already has active mounts', 'Run ./rx3 stop before the probe.')
+        with self.lock():
+            mounted = False
+            try:
+                self.prepare_mounts(); mounted = True
+                self.execute_probe()
+            finally:
+                if mounted:
+                    self.unmount_all()
+
     def preflight(self):
         self.require_user()
         self.config.require_valid()
@@ -376,6 +424,11 @@ class Launcher:
             usb = False
             if new_player:
                 usb = self.prepare_mounts()
+                try:
+                    self.execute_probe()
+                except BaseException:
+                    self.unmount_all()
+                    raise
                 if not self.dry_run:
                     with Tree(self.runtime) as tree:
                         tree.sparse_file('dev/rx3-present-frame', FRAME_BYTES, 0o600)

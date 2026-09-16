@@ -112,7 +112,7 @@ class SetupTests(unittest.TestCase):
         process = MagicMock(); process.poll.return_value = None
         stopped = {k: [] for k in ('player', 'display', 'touch', 'midi')}
         started = {k: [123] for k in stopped}
-        with patch.object(launch, 'preflight', return_value=('/dev/dri/card0','test','/dev/input/event0','test',self.root/'map.xml')), patch.object(launch, 'prepare_mounts', return_value=False), patch.object(launch, 'helpers', side_effect=[stopped, started]), patch.object(launch, 'ensure_sudo'), patch.object(launch, 'spawn', return_value=process), patch('rx3tool.launch.Tree') as tree, patch('rx3tool.launch.time.monotonic', side_effect=[0, 1, 11]), patch('rx3tool.launch.time.sleep') as sleep, patch('rx3tool.launch.player_pids', return_value=[]):
+        with patch.object(launch, 'preflight', return_value=('/dev/dri/card0','test','/dev/input/event0','test',self.root/'map.xml')), patch.object(launch, 'prepare_mounts', return_value=False), patch.object(launch, 'execute_probe'), patch.object(launch, 'helpers', side_effect=[stopped, started]), patch.object(launch, 'ensure_sudo'), patch.object(launch, 'spawn', return_value=process), patch('rx3tool.launch.Tree') as tree, patch('rx3tool.launch.time.monotonic', side_effect=[0, 1, 11]), patch('rx3tool.launch.time.sleep') as sleep, patch('rx3tool.launch.player_pids', return_value=[]):
             launch.start()
             sleep.assert_called_once_with(.5)
         self.assertGreaterEqual(process.poll.call_count, 2)
@@ -123,6 +123,15 @@ class SetupTests(unittest.TestCase):
                          ['prlimit', '--rtprio=95', '--memlock=unlimited', '--', 'chroot'])
         self.assertTrue(any(arg.startswith('--userspec=') for arg in command))
         self.assertIn('LD_PRELOAD=/lib/fbshim.so', command)
+
+    def test_arm32_probe_uses_same_limits_identity_and_runtime(self):
+        command = Launcher(self.cfg).probe_command()
+        self.assertEqual(command[:5],
+                         ['prlimit', '--rtprio=95', '--memlock=unlimited', '--', 'chroot'])
+        self.assertTrue(any(arg.startswith('--userspec=') for arg in command))
+        self.assertIn(str(self.cfg.runtime), command)
+        self.assertIn('/usr/local/bin/rx3-arm32-probe', command)
+        self.assertEqual(command[-1], 'DDJ400')
 
     def test_realtime_probe_drops_identity_before_entering_scheduler(self):
         command = realtime_probe_command(self.cfg)
@@ -142,6 +151,7 @@ class SetupTests(unittest.TestCase):
         with patch.object(launch, 'preflight', return_value=('/dev/dri/card0', 'test',
                           '/dev/input/event0', 'test', self.root / 'map.xml')), \
              patch.object(launch, 'prepare_mounts', return_value=False), \
+             patch.object(launch, 'execute_probe'), \
              patch.object(launch, 'helpers', return_value=stopped), \
              patch.object(launch, 'ensure_sudo'), \
              patch.object(launch, 'spawn', side_effect=[player, helper, helper, helper]), \

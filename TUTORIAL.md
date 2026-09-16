@@ -156,6 +156,17 @@ player: o log anterior mostrou `sched_setscheduler(...)=EPERM` imediatamente
 antes da sequência de falha. O teste agora é feito após a troca para o UID do
 player, não apenas como root.
 
+Antes da primeira inicialização, rode a prova ARM32 completa:
+
+```bash
+./rx3 probe
+```
+
+O resultado precisa terminar em `RESULT PASS (0 failures)`. Essa prova usa o
+loader e as bibliotecas ARM32 dentro do chroot, o mesmo usuário e limites do
+player, além dos dispositivos ALSA reais. `./rx3 start` repete a prova
+automaticamente e não abre o RX3 se qualquer requisito falhar.
+
 Isso confere tudo: firmware, build, runtime, dispositivos (display, touch,
 áudio, MIDI). Resolva qualquer `FAIL` antes de seguir. Pontos que exigem
 atenção especial no seu caso:

@@ -135,6 +135,15 @@ to require four-channel 44.1 kHz S16_LE output, and it actually enters
 `SCHED_RR` after dropping to the configured player UID. A successful `prlimit`
 command alone is not considered proof of real-time scheduling support.
 
+After building and installing, run `./rx3 probe` on the Orange Pi. It executes
+`rx3-arm32-probe` inside the real firmware chroot, through `/lib/ld-linux.so.3`,
+with the same UID/GID, supplementary groups, real-time limits and `/dev/snd`
+mounts used by the player. It must pass ARM32 pointer size, pthread/futex,
+SCHED_RR, mlock, POSIX message queues and direct four-channel DDJ-400 ALSA.
+`./rx3 start` runs the same probe automatically before launching the player.
+The individual checks and expected output are documented in
+[`ARM32-PROBE.md`](ARM32-PROBE.md).
+
 ## Troubleshooting
 
 | Symptom | Next step |

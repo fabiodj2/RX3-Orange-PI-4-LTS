@@ -61,10 +61,17 @@ if [ "$mode" = shim ] || [ "$mode" = all ]; then
  command -v "$as_arm" >/dev/null 2>&1 || missing "$as_arm" binutils-arm-linux-gnueabi
  command -v "$objcopy_arm" >/dev/null 2>&1 || missing "$objcopy_arm" binutils-arm-linux-gnueabi
  # A failed build must never leave an older shim behind for ./rx3 install.
- rm -f "$out/fbshim-audio.so" "$out/fbshim.so" "$out/pi-clock.o" "$out/pi-clock.bin"
+ rm -f "$out/fbshim-audio.so" "$out/fbshim.so" "$out/pi-clock.o" "$out/pi-clock.bin" \
+  "$out/rx3-arm32-probe"
  RX3_BUILD=$out sh build-audio-candidate.sh "$runtime"
  cp "$out/fbshim-audio.so" "$out/fbshim.so"
  "$as_arm" -o "$out/pi-clock.o" pi-clock.S
  "$objcopy_arm" -O binary -j .text "$out/pi-clock.o" "$out/pi-clock.bin"
- echo "Built ARM32 shim and clock stub in $out: fbshim.so pi-clock.bin"
+ "${CC_ARM:-arm-linux-gnueabi-gcc}" -march=armv7-a -O2 -nostdlib -no-pie -idirafter /usr/include \
+  -U_TIME_BITS -D_TIME_BITS=32 -U_FILE_OFFSET_BITS -D_FILE_OFFSET_BITS=32 \
+  -Wl,-e,_start -Wl,--hash-style=sysv -Wl,--dynamic-linker=/lib/ld-linux.so.3 \
+  -o "$out/rx3-arm32-probe" arm32-probe-start.S arm32-probe.c \
+  -L"$runtime/usr/lib" -Wl,-rpath-link,"$runtime/lib" -l:libasound.so.2 \
+  -L"$runtime/lib" -l:libpthread.so.0 -l:librt.so.1 -l:libc.so.6 -lgcc
+ echo "Built ARM32 shim, clock stub and compatibility probe in $out"
 fi

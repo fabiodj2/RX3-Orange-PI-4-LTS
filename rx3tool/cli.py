@@ -113,6 +113,7 @@ def main(argv=None):
     install = command('install', 'install the patched player and the shim into the runtime')
     install.add_argument('--dry-run', action='store_true')
     command('validate', 'check the assembled runtime (read-only)')
+    probe = command('probe', 'run the full ARM32 compatibility probe on the target board')
     setup = command('setup', 'run recover, assemble, build, install and validate in order')
     setup.add_argument('--from', dest='directories', action='append', default=[], metavar='DIR')
     setup.add_argument('--file', dest='files', action='append', default=[], metavar='ZIP')
@@ -176,11 +177,13 @@ def run(args):
         return Doctor(config, ('runtime',)).run()
     elif args.command == 'setup':
         return setup(config, args)
-    elif args.command in ('start', 'stop', 'status'):
+    elif args.command in ('start', 'stop', 'status', 'probe'):
         from .launch import Launcher
         launcher = Launcher(config, getattr(args, 'dry_run', False))
         if args.command == 'start':
             launcher.start()
+        elif args.command == 'probe':
+            launcher.probe()
         elif args.command == 'stop':
             launcher.stop(args.keep_mounts)
         else:
@@ -208,7 +211,7 @@ def setup(config, args):
     built = build(config, args.dry_run)
     stage('Step 4 of 5: install the patched player and shim')
     if args.dry_run:
-        say('  [dry-run] would install root/pdj/rbp-pi and lib/fbshim.so')
+        say('  [dry-run] would install root/pdj/rbp-pi, lib/fbshim.so and the ARM32 probe')
     elif built:
         Installer(config).run()
     stage('Step 5 of 5: validate')

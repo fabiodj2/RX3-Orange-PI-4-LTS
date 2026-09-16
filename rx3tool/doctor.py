@@ -323,7 +323,9 @@ class Doctor:
         if 'installed' in marker:
             from .safefs import Tree
             import hashlib
-            for relative, field in [('root/pdj/rbp-pi', 'player_pi_sha256'), ('lib/fbshim.so', 'shim_sha256')]:
+            for relative, field in [('root/pdj/rbp-pi', 'player_pi_sha256'),
+                                    ('lib/fbshim.so', 'shim_sha256'),
+                                    ('usr/local/bin/rx3-arm32-probe', 'probe_sha256')]:
                 try:
                     with Tree(runtime) as tree, tree.open_read(relative) as handle:
                         digest = hashlib.sha256(handle.read()).hexdigest()
@@ -341,6 +343,8 @@ class Doctor:
         problems = missing_libraries(runtime, target) + missing_libraries(runtime, '/bin/busybox')
         if (runtime / 'lib/fbshim.so').is_file():
             problems += missing_libraries(runtime, '/lib/fbshim.so')
+        if (runtime / 'usr/local/bin/rx3-arm32-probe').is_file():
+            problems += missing_libraries(runtime, '/usr/local/bin/rx3-arm32-probe')
         if problems:
             self.fail("The player's libraries do not all resolve inside the runtime",
                       '\n'.join(problems[:8]) + '\nRepair with: ./rx3 assemble --repair')
@@ -486,7 +490,8 @@ class Doctor:
                                   'UniNo=0x0000000d and then crash. Check limits/cgroup/kernel policy.')
             else:
                 info('./rx3 start will ask for your password for the mount/chroot steps.')
-        missing_build = [n for n in ('rx3-fb-present', 'rx3-touch-bridge', 'fbshim.so')
+        missing_build = [n for n in ('rx3-fb-present', 'rx3-touch-bridge', 'fbshim.so',
+                                     'rx3-arm32-probe')
                          if not (config.build / n).is_file()]
         if missing_build:
             self.fail('Not built yet: ' + ', '.join(missing_build), 'Run: ./rx3 build')
