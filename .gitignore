@@ -1,0 +1,22 @@
+build/
+__pycache__/
+*.pyc
+*.so
+*.o
+*.bin
+*.raw
+*.zip
+*.key
+*.iso
+*.UPD
+extracted/
+pi-runtime/
+rbp*
+rx3-rootfs/
+
+# Local configuration, recovered proprietary material and runtime state
+/rx3.conf
+/work/
+*.partial
+*.tar.gz
+*.tar.bz2

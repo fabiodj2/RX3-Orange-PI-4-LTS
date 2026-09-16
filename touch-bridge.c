@@ -82,13 +82,13 @@ int main(int argc,char**argv){
    if(fullscreen){if(source<0){source=i;f->region=0;}}
    else if(ly>=880){f->region=1+(ly-880)/100*6+lx/320;button(f->region-1,1);f->next_repeat=now+400;}
    else if(lx<256||lx>=1664){int si=(lx<256?0:3)+ly/293;if(si>5)si=5;
-    if((si==0||si==3)&&ly%333>=40&&ly%333<80){int ch=si==0?1:2;command(0x5020,0,ch,0,0);command(0x5020,2,ch,0,0);state->headphone_cue^=ch==1?1:2;}
+    if((si==0||si==3)&&ly%293>=40&&ly%293<80){int ch=si==0?1:2;command(0x5020,0,ch,0,0);command(0x5020,2,ch,0,0);state->headphone_cue^=ch==1?1:2;}
     else f->region=20+si;
    }else if(source<0){source=i;f->region=0;}
    fprintf(stderr,"touch begin slot=%d screen=%d,%d region=%d\n",i,lx,ly,f->region);
   }
   if(f->active&&f->down){
-   if(f->region>=20&&ready){int si=f->region-20;float a=(265-(ly-(si%3)*333))/180.f;if(a<0)a=0;if(a>1)a=1;state->level[si]=a;command(slider_keys[si],4,slider_channels[si],0,a);}
+   if(f->region>=20&&ready){int si=f->region-20;float a=(265-(ly-(si%3)*293))/180.f;if(a<0)a=0;if(a>1)a=1;state->level[si]=a;command(slider_keys[si],4,slider_channels[si],0,a);}
    else if(f->region>0&&f->region<=12&&buttons[f->region-1].scroll&&now>=f->next_repeat){button(f->region-1,1);f->next_repeat=now+120;}
    else if(f->region==0){
    /* Fullscreen inverse of frame-scale.h's 27/20 pillarbox scale (was

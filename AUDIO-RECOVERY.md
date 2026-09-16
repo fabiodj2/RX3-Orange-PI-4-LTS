@@ -1,0 +1,138 @@
+> Current status: recovery is now integrated into build.sh and deployed. The final section records the live FLX6 driver-loss test. Earlier “not deployed” sections are development history.
+
+# Audio recovery investigation
+
+Status: the pair-reopen controller and ALSA parameter driver are implemented and tested in isolation; live reconnect is not integrated or verified. This is distinct from the working MIDI rediscovery loop. The live player was left running and paused; no USB device was detached and no native audio error was injected.
+
+## Verified native error path
+
+Disassembly of the deployed RX3 v1.19 player, `juce::ALSAThread::run()` at0x3c52e8:
+
+- Playback calls `snd_pcm_writei`. Negative results other than -32 and -86 enter0x3c55f8. These two special values bypass this branch; the playback branch does not itself call `snd_pcm_prepare` for them.
+- The error branch prints `ALSA: wait Resolving xrun`, opens `/dev/mem`, and attempts a44-byte mapping at physical address0x020ec000. It polls offset40, then retries the existing loop. This is vendor DMA recovery, not USB sound-device reopening.
+- Failed `/dev/mem` open prints a memory-device error and returns to the loop without the one-second delay used by the failed-mmap branch. Repeated device errors could therefore produce repeated logging; that behavior has not been induced live.
+- `/dev/mem` is absent inside the current Pi runtime. Do not provide physical memory access to make this vendor path run.
+- Capture read errors have separate `snd_pcm_prepare` branches for -32; that does not establish playback-device reconnect.
+
+The native loop contains no PCM close/open sequence in this error path. The current shim redirects PCM open/configuration but does not wrap `snd_pcm_writei`, `snd_pcm_prepare` or `snd_pcm_close`. The existing `start-rx3.sh` only starts a new player when its process is absent, so a surviving process with failed audio is not repaired by repeating start.
+
+## Current audio topology
+
+Master and headphone PCMs are separate `rx3out` and `rx3cue` plug/route handles sharing one four-channel `rx3mix` dmix hardware stream. The device name uses `hw:CARD=DDJFLX6,DEV=0`; this avoids a fixed card number at open time but does not replace an already-open disconnected handle. On inspection the controller was present as card2, the MIDI reader had119 bindings, and player PID23095 was live.
+
+`juce::ALSADevice::setParameters()` at0x3c68b4 configures access, format, rate, channels, period count/size and hardware params, then sets silence/start/stop software thresholds. A reconnect implementation needs both hardware and software configuration, not just a new `snd_pcm_open` call. The shim forces interleaved access and currently routes master/headphones at0.25 gain per channel.
+
+## Next implementation boundary
+
+Intercept playback errors before the vendor DMA branch, distinguish recoverable underrun/suspend from device loss, and coordinate replacing both output handles and their configuration. All subsequent prepare/close calls must resolve to the replacement handle. Bound retries and pace output while hardware is absent; avoid a busy loop. Preserve native track/deck state and report audio unavailability rather than silently claiming playback success.
+
+Before live detach testing, use isolated fake ALSA transport to exercise failure during either output, persistent absence, reopen failure, card-number changes, parameter failure, cleanup and successful recovery. Then verify actual master/cue audio after reconnect while retaining loaded tracks and touch responsiveness. The isolated pair-lifecycle checks below now pass. Real ALSA configuration, write-error handling, pacing and live reconnect gates remain open.
+
+Local research contains `alsa-thread-disasm.txt` and `alsa-parameters-disasm.txt` from the live executable. No runtime code was changed in this investigation.
+
+## Pair-reopen controller (not deployed)
+
+`audio-recovery.c/.h` owns the master/cue pair and coordinates device-loss cleanup and reopening. Either output losing the hardware invalidates both handles. Repeated loss reports do not restart the retry clock. Failed attempts are separated by at least1000ms measured from their start. Replacements become available only after both `open_configured` callbacks succeed; a failed callback's partial handle and any completed sibling are closed. Stop prevents further reopening and closes remaining handles exactly once.
+
+The caller must serialize writes, close and controller operations. Driver callbacks must be bounded and must restore the saved hardware/software configuration. The controller does not call ALSA, sleep, generate audio, or claim discarded frames were played. It is intentionally absent from `build.sh` until the ALSA adapter and pacing logic are implemented.
+
+`test-audio-recovery.c` passed with local AddressSanitizer/UndefinedBehaviorSanitizer and as a statically linked ARM32 executable on the Pi. It exercises persistent absence, one-second retry gating under repeated callbacks, duplicate loss reports, failure configuring either output, success with a null handle, simulated card-number change, successful pair replacement, offline stop and live stop. The fake driver checks that neither replacement is published while configuration is incomplete and that cleanup leaks no handles. This is lifecycle evidence, not proof that real ALSA parameters or USB devices recover.
+
+Local test:
+
+```sh
+gcc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined -o /tmp/test-audio-recovery audio-recovery.c test-audio-recovery.c
+/tmp/test-audio-recovery
+```
+
+Next integrate a driver that saves/restores real ALSA parameters, resolves stable caller handles to replacements, distinguishes recoverable errors from device loss, and provides paced unavailable output. Keep the vendor DMA error path unreachable for managed output errors. Then test the adapter before any live USB detach.
+
+## ALSA parameter driver (not deployed)
+
+`audio-alsa.c/.h` now supplies the pair controller's real ALSA callbacks. It snapshots current hardware and software parameters for each configured playback PCM, retaining the previous good snapshot if capture fails. Reopen uses the saved PCM name, applies fresh copies of both parameter objects, and restores the caller's blocking mode. Opening temporarily adds NONBLOCK to avoid waiting on a busy device. The four entry points that would otherwise recurse through shim wrappers are resolved with RTLD_NEXT. Partial handles are returned to the pair controller for cleanup.
+
+`test-audio-alsa.c` passed with local ASan/UBSan against ALSA1.2.16.1 and on the Pi host against ALSA1.2.14. It uses two real ALSA null PCMs with stereo S16_LE,44100Hz,128-frame periods and512-frame buffers, plus distinct start thresholds and explicit stop/silence settings. Four successful pair reopens preserved every inspected setting and accepted128-frame writes. An injected failure on the second output's software-parameter application, after real open/hardware setup, left both published handles null; the subsequent retry restored both. Failed snapshot capture also preserved the earlier good snapshot.
+
+These tests used the host ALSA libraries, not the ARM32 firmware runtime or the FLX6/dmix hardware chain. Null PCM accepting writes is not evidence of audible output or USB reconnect. Neither recovery source is linked into the live shim yet. Outstanding integration: stable caller-handle lookup, complete call interception and serialization, write-error classification, bounded underrun/suspend handling, offline pacing/status, live wrapper validation, then real routed-output recovery tests. The isolated ARM32 shared-library check below now passes.
+
+```sh
+gcc -std=gnu11 -O2 -Wall -Wextra -Werror -o /tmp/test-audio-alsa audio-recovery.c audio-handles.c audio-alsa.c test-audio-alsa.c $(pkg-config --cflags --libs alsa) -ldl
+/tmp/test-audio-alsa
+```
+
+## Embedded ARM32 runtime check
+
+`test-audio-alsa-runtime.sh` now builds a test-only preload library against the actual runtime libraries and runs it in a separate `busybox true` process inside the chroot. It uses only null PCMs and removes its temporary DSO on exit. On the Pi it reported ALSA1.0.24.1 and passed all four pair reopens, exact parameter checks, write acceptance, snapshot failure preservation and partial-software-setup failure recovery. Player PID23095 and backlight0 were unchanged.
+
+The first unversioned test DSO failed the rate getter assertion. Inspection found two runtime definitions: legacy `snd_pcm_hw_params_get_rate@ALSA_0.9` and the modern output-pointer ABI `@@ALSA_0.9.0rc4`. Linking the DSO explicitly against the runtime's libasound records the correct symbol versions and resolved the failure. This is a test/build ABI correction; do not infer an audio-engine failure. Future integrated builds must preserve appropriate ALSA symbol versions or resolve the required ABI explicitly.
+
+Run on the Pi from the source checkpoint:
+
+```sh
+sh test-audio-alsa-runtime.sh /home/pompu_5/rx3-rootfs
+```
+
+The constructor harness is enabled only by RX3_TEST_PRELOAD and exits after the tests; it must never be loaded into the running player. Real FLX6/dmix reopening, stable handle forwarding, synchronization, write-error recovery, offline pacing/status and live integration remain unverified.
+
+## Bounded write recovery (not deployed)
+
+`audio-write.c/.h` now routes writes through the pair's current handle and returns separate progress, retry, unavailable and closed states. Partial writes report only accepted frames. An underrun gets one prepare/retry; suspend gets one resume attempt, with prepare fallback if unsupported. Resume EAGAIN returns for a paced later call. EINTR gets at most one immediate retry. Device loss or failed recovery invalidates both handles and uses the existing pair reopen/backoff controller. No call performs more than two writes, and failures never claim frames were played.
+
+`test-audio-write.c` passed local ASan/UBSan and a static ARM32 build on the Pi. Fake transport covers partial writes, repeated underruns, repeated interruption, EAGAIN, pending/successful/unsupported resume, failed prepare, loss originating from either output, persistent absence/backoff, use of replacement handles and clean stop. The test checks that closed handles are never written and all handles are released at the end.
+
+This helper remains outside the live shim. Its caller must serialize PCM operations and pace retry/unavailable results. Real ALSA callbacks, stable native handle routing, offline pacing/status and live interception remain integration work; these fake-transport tests do not prove physical reconnect.
+
+## Stable public handle routing (not deployed)
+
+`audio-handles.c/.h` separates caller-visible tokens from ALSA allocation addresses. During initial discovery/setup each token resolves to its original PCM; once the configured pair is bound, it resolves to the pair's current replacement. Offline tokens remain recognized but unavailable. An old freed PCM address is never treated as a managed public token, so reuse for an unrelated capture PCM cannot redirect that stream accidentally.
+
+Closing either bound public token stops both real outputs. The other token remains recognized/unavailable until its normal close; duplicate close is rejected, and a new output cannot open into a half-retired pair. Before pair binding, closing a discovery token returns its initial PCM to the caller for cleanup. Callers must serialize all operations and keep registry storage alive.
+
+`test-audio-handles.c` passed local ASan/UBSan for discovery, repeated replacements, offline lookup, unrelated old PCM addresses, pair retirement and cleanup. The real ALSA test now routes all prepare/write operations through the original public tokens across four reopens. Exact configuration/write checks and partial-failure rollback passed locally and inside the embedded ARM32 ALSA1.0.24.1 runtime.
+
+An import audit also confirmed native handle-bearing calls beyond write/prepare/close: hardware setup/test functions, software setup/current functions, readi, and two-handle `snd_pcm_link`. All applicable entry points must unwrap managed tokens before passing them to ALSA; parameter-object-only getters/sizing functions do not take PCM tokens. Setup wrappers must preserve the native requested ALSA symbol versions. The current player still receives ordinary real PCM pointers; the token registry is not wired into live open or any interposed call yet. Offline pacing/status, serialized wrappers, integration and physical FLX6 recovery remain open.
+
+## Offline pair clock (not deployed)
+
+`audio-pacer.c/.h` computes absolute monotonic deadlines for RETRY/UNAVAILABLE output. Equal-size master/cue writes share one engine-block deadline rather than advancing two periods. It retains fractional sample periods, tolerates either output order or repeated single-output calls, and resets long backlogs. Caller serialization, once-per-block use, actual sleeping and resets when hardware returns or configuration changes remain integration responsibilities.
+
+Pure clock tests passed local ASan/UBSan and ARM32 on Pi: exact accumulated duration at44.1/48/96kHz, paired/reordered/single-output calls, reset and long-pause handling. The first wall-clock version rebased after a delay of one period. On the busy Pi, recurring wakeups about8ms late made1280ms of blocks take roughly2.3–2.4seconds. A separate AArch64 trace reproduced this, so it was not solely an ARM32 ABI problem. The corrected clock preserves deadlines through normal jitter and discards a backlog only beyond max(100ms,one period). A new deterministic jitter regression covers that failure.
+
+The corrected static ARM32 `test-audio-pacer-clock.c`, using real absolute clock_nanosleep calls, measured1285.319ms for1280ms of blocks. This demonstrates the isolated clock's timing under that load; it does not establish live audio callback scheduling, audible continuity or USB recovery. Local research `pacer-clock-trace.c` retains the diagnostic trace program. The live player and its scheduler were not changed.
+
+All recovery components remain outside build.sh. Next connect the interposed handle-bearing ALSA calls, serialization, write handling, paced unavailable results and status reporting; then run complete-wrapper tests before deployment.
+
+## Interposed integration candidate (not deployed)
+
+`audio-proxy.c` now connects the recovery driver, stable handles, bounded writes and offline clock behind ALSA entry points. A recursive mutex serializes setup/write/close while allowing ALSA's internal calls with real handles. Vendor output names map to master/cue; unrelated streams pass through. Successful managed PCM links are recorded for replay on replacement. Unavailable writes return a paced EPIPE, which RX3 treats as a skipped block, without reporting fictitious accepted frames or entering the vendor DMA recovery branch.
+
+`audio-proxy.map` preserves ALSA symbol versions. The embedded runtime exposed two compatibility failures during testing: the modern cross-compiler defaults to time64 symbols absent from glibc2.13, and plain dlsym selected the legacy value-taking rate-near implementation. The isolated ARM32 build explicitly uses the runtime's 32-bit time ABI; the three near-setting wrappers explicitly resolve ALSA_0.9.0rc4 with dlvsym. The test exercises rate/period/period-count near setup to prevent regression.
+
+`test-audio-proxy.sh` runs a separate process against null PCM aliases, using ordinary interposed ALSA calls throughout. It covers eight immediate pair replacements plus two recoveries after simulated persistent absence, unchanged public pointers, exact hardware/software settings, actual null-PCM writes, unrelated capture, safely rejected links, both close orders and duplicate close. Offline master/cue writes share a deadline: 32 paired blocks should take92.880ms; the embedded ARM32 run measured92.977ms and92.940ms. Local ASan/UBSan also passed.
+
+`test-audio-proxy-runtime.sh` builds two temporary test DSOs linked to the embedded ALSA1.0.24.1/glibc2.13 runtime, runs them only inside a separate busybox process and removes them on exit. Never preload the constructor harness into the player. Loss and absence injection exist only with RX3_AUDIO_PROXY_TEST.
+
+The candidate is still outside build.sh and the running fbshim. Tests do not yet prove successful hardware-link replay, real FLX6/dmix device removal/reopening, concurrent close/write behavior under the player, or audible continuity. Next validate those integration boundaries and replace the old shim wrappers before controlled deployment. Waveform flicker and physical jog behavior remain separate unfinished work.
+
+## Actual FLX6 route reopen check (candidate, not deployed)
+
+The first isolated run against the real `rx3out`/`rx3cue` plug/route/dmix devices failed: reopening master returned EINVAL when applying the opaque `hw_params_current` snapshot. Null PCMs had accepted that operation. `audio-alsa.c` now rebuilds a fresh constraint space with the saved access, format, subformat, channels, rate, period size and buffer size before applying hardware parameters; software parameters remain separately preserved. Test-only error logging identifies the failing configuration stage.
+
+After this correction, the complete interposer harness passed inside the embedded runtime against the actual connected FLX6 routes: eight immediate pair reopens, two simulated absence/backoff/recovery cycles, both output orders, exact parameter checks and128-frame silent writes. Offline paired pacing measured92.947/92.945ms for92.880ms of blocks. Separate embedded null tests, including partial setup rollback, still pass.
+
+To reproduce the hardware check, stop the player and any other audio owner first, then run `sh test-audio-proxy-runtime.sh /home/pompu_5/rx3-rootfs --flx6`; restart the player afterward. This mode uses the runtime's real ALSA configuration and writes silence. The test did not unplug/reset USB, simulate a disappearing kernel device, verify audible output or validate successful PCM link replay. The live shim remains unchanged. RX3 was restarted afterward and both tracks reloaded through touch; backlight remained0.
+
+
+## Live deployment and real device-loss recovery
+
+`build.sh` now builds the combined shim through `build-audio-candidate.sh`, linking against the actual embedded libraries and preserving native ALSA symbol versions with `fbshim-audio.map`. The former audio wrappers are excluded with RX3_AUDIO_RECOVERY; framebuffer, native UI and input hooks remain included. The build output and deployed `/lib/fbshim.so` both hash to `2ccbe392b8a2571cc2fa8c5ec4df7f3a9d1dfff79f911a524d6f3db61e9a8e47`. The preceding working binary is preserved as `/lib/fbshim-pre-audio-recovery.so` inside the Pi runtime.
+
+The combined shim passed eager symbol resolution inside the ARM32 runtime and booted the real player (PID25426). Touch loaded both tracks. Read-only process inspection confirmed both configured handles bound to a LIVE recovery pair at44100Hz. Before loss, playing deck1 produced40 distinct DMA buffers and nonzero master/headphone audio.
+
+A sysfs test detached the actual FLX6 `snd-usb-audio` interfaces. The player remained running, set the pair OFFLINE, cleared both real handles and retried at its backoff interval. The first manual attempt detached only the primary interface: kernel rebind failed because the other audio/MIDI interfaces retained a shutdown card instance. Releasing the remaining interfaces and binding audio plus MIDI control restored the card; the same player recovered. The corrected repeat test captures and releases all FLX6 interfaces belonging to snd-usb-audio, then rebinds each that has not already been claimed. It passed automatically with the same PID: OFFLINE with null handles during loss, LIVE with replacement handles and zero error afterward. The MIDI reader also reported reconnection to hw:2,0,0.
+
+After the corrected test, deck1 and deck2 each produced40 distinct actual DMA buffers during touch-started playback. Deck1 RMS was[51.87,49.77,206.37,198.29]; deck2 RMS was[47.94,46.02,0,0] with deck1 headphone cue still selected. Both decks were then returned to cue. A completed-frame screenshot showed both tracks, stacked waveforms and the native touch controls; the panel backlight remained0.
+
+`test-audio-live-state.py` is a read-only probe whose local build ELF must match the deployed shim. `test-audio-live-reconnect.py` is an explicit root-only hardware disruption test: run only on the Pi with the matching build, paused decks, and the FLX6 at card2. It checks device identity and releases/rebinds only that device's snd-usb-audio interfaces, using finally for restoration. The test is not part of ordinary builds or the null-PCM suite.
+
+This establishes recovery from actual ALSA device disappearance and return within one running player, plus playback afterward. It does not establish uninterrupted audible playback, a physical cable-unplug test, card-number-change recovery on real hardware, or successful ALSA hardware-link replay. Waveform flicker, physical jog feel and full reboot/autostart verification remain open.

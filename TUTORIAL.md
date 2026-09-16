@@ -20,44 +20,21 @@ pronto.
 
 ---
 
-## Parte 1 — Colocar os arquivos no seu fork
+## Parte 1 — Obter a branch integrada
 
 Isso roda em qualquer máquina com `git` e acesso à sua conta GitHub (o
 mais simples é no seu Mac, onde você já deve estar logado).
 
 ```bash
-# 1. Clonar seu fork (o que você já tem: fabiodj2/rx3-pi)
-git clone https://github.com/fabiodj2/RX3-Orange-PI-4-LTS
-
-# 2. IMPORTANTE: sua fork está no branch "main" (versão FLX6, sem o CLI
-#    ./rx3). O trabalho todo que fizemos foi em cima da branch
-#    "opus/human-friendly-setup" do repo original (tem o CLI, o rx3.conf
-#    etc). Trazer essa branch pro seu fork primeiro:
-git remote add upstream https://github.com/xsploit/rx3-pi.git
-git fetch upstream opus/human-friendly-setup
-git checkout -b orangepi4-ddj400 upstream/opus/human-friendly-setup
-
-# 3. Baixe o pacote que eu gerei (orangepi4-ddj400-port.tar.gz, no card
-#    de arquivos desta conversa) e extraia DENTRO do checkout, na raiz
-#    (ele já tem a estrutura de pastas certa, incluindo rx3tool/):
-tar xzf ~/Downloads/orangepi4-ddj400-port.tar.gz -C .
-
-# 4. Conferir o que mudou
-git status
-#   novos:      ddj400-rx3.py, frame-scale.h (modificado), drm-present.h
-#               (modificado), fb-present.c (modificado), touch-bridge.c
-#               (modificado), DDJ400-PORT-NOTES.md, DISPLAY-PORT-NOTES.md
-#   modificados: rx3tool/config.py, rx3tool/doctor.py, rx3tool/mapping.py,
-#               rx3tool/launch.py
-
-# 5. Commit e push pro seu fork
-git add -A
-git commit -m "Port: Orange Pi 4 LTS (1920x1080 landscape) + DDJ-400"
-git push -u origin orangepi4-ddj400
+# A branch já contém a base completa do xsploit/rx3-pi e as adaptações.
+git clone --branch orangepi4-ddj400-integrated \
+  https://github.com/fabiodj2/RX3-Orange-PI-4-LTS.git
+cd RX3-Orange-PI-4-LTS
 ```
 
-Depois disso seu fork tem um branch `orangepi4-ddj400` com tudo. É esse
-branch que você vai clonar na Orange Pi.
+Não extraia `orangepi4-ddj400-port.tar.gz` sobre o repositório: o pacote
+antigo continha somente a camada customizada e podia sobrescrever correções
+mais novas do projeto original.
 
 ---
 
@@ -70,8 +47,8 @@ SSH na Orange Pi (`ssh root@192.168.15.10`, pelo IP fixo que você já usa).
 # pro rx3-fb-present/rx3-touch-bridge, que rodam NA Orange Pi em ARM64)
 apt update
 apt install -y build-essential pkg-config libdrm-dev libfreetype-dev \
-  gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi \
-  python3 python3-cryptography unzip libarchive-tools alsa-utils git
+  gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi libc6-dev-armel-cross linux-libc-dev \
+  python3 python3-cryptography unzip libarchive-tools alsa-utils util-linux git
 
 # Confirme o cross-compilador instalado
 arm-linux-gnueabi-gcc --version
@@ -80,8 +57,9 @@ arm-linux-gnueabi-gcc --version
 ```bash
 # Clonar o SEU fork, branch que você acabou de criar
 cd ~
-git clone --branch orangepi4-ddj400 https://github.com/fabiodj2/rx3-pi.git
-cd rx3-pi
+git clone --branch orangepi4-ddj400-integrated \
+  https://github.com/fabiodj2/RX3-Orange-PI-4-LTS.git
+cd RX3-Orange-PI-4-LTS
 ```
 
 ---
@@ -102,8 +80,7 @@ Ajustes necessários (o resto pode ficar em `auto`):
 
 ```ini
 [display]
-# auto já deve detectar seu monitor 1920x1080 (PANEL foi mudado pra isso
-# no config.py que veio no pacote) — só mude se ./rx3 doctor reclamar.
+# auto deve detectar o conector que anuncia exatamente 1920x1080.
 drm_device = auto
 
 [audio]
@@ -116,7 +93,7 @@ card = DDJ400
 [controller]
 # Confirme o nome exato com o controlador plugado:
 #   amidi -l
-# deve listar algo tipo "DDJ-400 MIDI 1" — meta o nome que aparecer ali.
+# deve listar algo tipo "DDJ-400 MIDI 1" — use uma parte única do nome.
 midi_name = DDJ-400
 # deixe "mapping" como está (work/Pioneer-DDJ-400.midi.xml) — o
 # ./rx3 mapping (Parte 5) baixa esse arquivo sozinho.
@@ -169,6 +146,7 @@ Confira o resultado:
 ## Parte 6 — Checagem geral antes de rodar
 
 ```bash
+./rx3 selftest
 ./rx3 doctor
 ```
 
@@ -201,6 +179,13 @@ atenção especial no seu caso:
 ```bash
 ./rx3 start
 ```
+
+O lançador aplica `RLIMIT_RTPRIO=95` e `RLIMIT_MEMLOCK=unlimited` antes de
+entrar no chroot. Isso é necessário porque o player cria threads `SCHED_RR`
+(prioridade 36 observada no diagnóstico da Orange Pi). Não edite
+`/etc/security/limits.conf` para contornar esse ponto: a execução por
+`sudo chroot --userspec` não abre uma nova sessão PAM confiável para aplicar
+esse arquivo.
 
 Isso sobe player, display (`rx3-fb-present --fullscreen`), touch e a
 ponte MIDI (`ddj400-rx3.py`) juntos. Acompanhe:

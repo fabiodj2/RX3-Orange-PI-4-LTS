@@ -58,12 +58,18 @@ int main(int argc,char**argv){
  if(argc<2)return 2;
  int fullscreen=argc>2&&!strcmp(argv[2],"--fullscreen");
  const char *fbdev=setting("RX3_FB_DEVICE","/dev/fb0");
- int src=open(argv[1],O_RDONLY),dst=open(fbdev,O_RDWR);
+ int src=open(argv[1],O_RDONLY),dst=-1;
  if(src<0){perror(argv[1]);return 1;}
- if(dst<0){perror(fbdev);return 1;}
- struct fb_fix_screeninfo f;struct fb_var_screeninfo v;ioctl(dst,FBIOGET_FSCREENINFO,&f);ioctl(dst,FBIOGET_VSCREENINFO,&v);
- if(v.xres!=1920||v.yres!=1080||v.bits_per_pixel!=32){fprintf(stderr,"Unsupported display %ux%u %ubpp on %s; need 1920x1080 32bpp landscape\n",v.xres,v.yres,v.bits_per_pixel,fbdev);return 1;}
- uint32_t *s=mmap(0,1280*800*4,PROT_READ,MAP_SHARED,src,0);unsigned char *d=mmap(0,f.smem_len,PROT_READ|PROT_WRITE,MAP_SHARED,dst,0);if(s==MAP_FAILED||d==MAP_FAILED)return 1;
+ int kms=drm_start();
+ struct fb_fix_screeninfo f={0};struct fb_var_screeninfo v={0};unsigned char *d=0;
+ if(kms){f.line_length=scanout[back].pitch;d=scanout[back].map;}
+ else{
+  dst=open(fbdev,O_RDWR);if(dst<0){perror(fbdev);return 1;}
+  if(ioctl(dst,FBIOGET_FSCREENINFO,&f)||ioctl(dst,FBIOGET_VSCREENINFO,&v)){perror("fbdev geometry");return 1;}
+  if(v.xres!=1920||v.yres!=1080||v.bits_per_pixel!=32){fprintf(stderr,"Unsupported display %ux%u %ubpp on %s; need 1920x1080 32bpp landscape\n",v.xres,v.yres,v.bits_per_pixel,fbdev);return 1;}
+  d=mmap(0,f.smem_len,PROT_READ|PROT_WRITE,MAP_SHARED,dst,0);if(d==MAP_FAILED)return 1;
+ }
+ uint32_t *s=mmap(0,1280*800*4,PROT_READ,MAP_SHARED,src,0);if(s==MAP_FAILED)return 1;
  if(argc>3&&!strcmp(argv[3],"--coherent")){
   int pf=open(runtime_path("RX3_PRESENT_FRAME",0,"/dev/rx3-present-frame"),O_RDONLY);
   if(pf<0){perror("completed-frame buffer");return 1;}
@@ -79,7 +85,6 @@ int main(int argc,char**argv){
  box(0,0,1920,1080,0x101820);for(int i=0;i<12;i++)drawbutton(i,0);
  for(int i=0;i<6;i++){int x=i<3?0:1664,y=(i%3)*293;label(x+80,y+27,slider_names[i],23,0xffffff);}
  memcpy(chrome,frame,sizeof(frame));
- int kms=drm_start();
  fprintf(stderr,"display backend: %s\n",kms?"DRM double-buffered vsync":"fbdev fallback");
  long long deadline=ns(),report=deadline,draw_total=0,last_present=deadline;unsigned frames=0,late=0;
  for(;;){

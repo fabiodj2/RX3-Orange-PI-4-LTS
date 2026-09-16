@@ -27,16 +27,12 @@
 static void rx3_fullscreen_present(unsigned char *dst,unsigned pitch,
  const uint32_t *src,uint32_t *scratch){
  (void)scratch; /* no rotation pass needed on a landscape panel */
- static int bars_drawn=0;
- if(!bars_drawn){
-  /* Paint the pillarbox bars once; the live area overwrites the middle
-   * every frame below, so we never touch these two strips again. */
-  for(int y=0;y<RX3_PANEL_H;y++){
-   uint32_t *row=(uint32_t*)(dst+y*pitch);
-   memset(row,0,RX3_BAR_W*4);
-   memset(row+RX3_PANEL_W-RX3_BAR_W,0,RX3_BAR_W*4);
-  }
-  bars_drawn=1;
+ /* Both DRM scanout buffers need initialized bars. Painting the narrow
+  * strips per frame also keeps fbdev/DRM reconnects deterministic. */
+ for(int y=0;y<RX3_PANEL_H;y++){
+  uint32_t *out=(uint32_t*)(dst+y*pitch);
+  memset(out,0,RX3_BAR_W*4);
+  memset(out+RX3_PANEL_W-RX3_BAR_W,0,RX3_BAR_W*4);
  }
  uint32_t row[RX3_SCALED_W];int previous=-1;
  for(int y=0;y<RX3_SCALED_H;y++){

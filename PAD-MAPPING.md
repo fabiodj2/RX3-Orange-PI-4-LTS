@@ -1,0 +1,81 @@
+# FLX6 pad compatibility
+
+The installed BiteDJ XML exposes deck1 hot cues on MIDI status0x97/notes0x00–07, beat jump on0x20–27, and beat loops on0x60–67. The bridge now tags hot-cue notes for native bank0 and default beat-jump notes for bank3. The native adapter selects and waits for the actual bank before forwarding a press. Beat-loop notes now select native bank1 before forwarding their pad presses. Generic native pad keys still follow the current bank; only the tagged FLX6 path adds this bank selection.
+
+## Native bank selection
+
+Live RX3 v1.19 state from `UiGetPadMode` / `StatWatcher::getPadMode`:
+
+| Native key | First bank | Second bank |
+|---|---:|---:|
+| 0x4113 Hot Cue |0|4|
+| 0x4114 Auto Beat Loop |1|5|
+| 0x4115 Slip Loop |2|6|
+| 0x4116 Beat Jump |3|7|
+
+Selecting another family enters its first bank. Repeating its selector toggles between the first and second banks. The bridge must check actual bank state, select the intended bank, and wait for acknowledgment before forwarding a pad press. A cached last-sent mode is insufficient because native touch can change state independently. Do not blindly send the selector on every pad press.
+
+Read-only native getter0x000fd3cc accepts zero-based deck index. It delegates to `StatWatcher::getPadMode`0x002c0464. For external diagnostics, root pointer0x02685f2c ->+56 watcher; watcher+12/+16 ->deck snapshot; byte+0x281 is pad mode. These addresses apply only to the verified binary.
+
+## Beat Jump first bank
+
+BiteDJ defaults and native bank3 agree:
+
+| FLX6 note | Native pad key | Beats |
+|---|---|---:|
+|0x20|0x4117|-1|
+|0x21|0x4118|+1|
+|0x22|0x4119|-2|
+|0x23|0x411a|+2|
+|0x24|0x411b|-4|
+|0x25|0x411c|+4|
+|0x26|0x411d|-8|
+|0x27|0x411e|+8|
+
+With Aaliyah/Try Again at93 BPM, native forward/back tests measured ±645, ±1290, ±2580 and ±5160 milliseconds. Each backward pad returned to its paired forward trial's starting position. The same distances subsequently passed through the deployed FLX6 MIDI parser and bank-selection adapter on both decks, starting from wrong bank7 and repeating pads without toggling banks. Physical pad presses and timing while playing remain unverified. The second bank displays1/2 and16 beat pairs among its pads; it is not interchangeable with bank3.
+
+BiteDJ's shifted size controls multiply/divide the entire jump bank by16, spanning fractional and large distances. They require additional native mapping; do not silently map them to an unrelated RX3 bank. Sampler and Pad FX also need separate compatibility work. LED feedback is not implemented.
+
+## Beat Loop first bank
+
+FLX6 notes0x60–67 map to native keys0x4117–0x411e in bank1: 1/4, 1/2, 1, 2, 4, 8, 16, 32 beats. Pressing the same pad again exits the loop. Deployed MIDI replay verified all eight sizes and on/off behavior on both decks, including automatic correction from bank5. A playing four-beat loop also wrapped at approximately2.58-second intervals at93BPM with active audio. Physical pad use remains unverified.
+
+## Held MIDI pads
+
+The reader tracks each held pad's native bank. A new bank press releases old-bank pads on that deck before requesting bank selection. A delayed old-bank NoteOff cannot release a new action occupying the same native pad key. Duplicate press packets for an already-held pad are ignored; disconnect cleanup clears pad ownership. This covers MIDI-originated overlap only: simultaneous native-touch/controller bank changes still need testing.
+
+BiteDJ's `lights.*.*Mode` entries describe LED output addresses. The XML does not establish corresponding mode-button input mappings; do not infer an input handler from those LED constants alone. Actual mode-button input capture remains pending.
+
+## Touchscreen mode selection
+
+Each deck now has Hot Cue, Beat Loop, Slip Loop and Beat Jump buttons directly above its eight pads. Tap a different mode to select its first bank; tap the selected mode again to switch banks. Blue shows the selected mode and a `2` identifies its second bank. The highlight follows actual native state, including bank changes from MIDI. Mode selectors hide in Browse and while the mixer is open.
+
+![Native touch mode selectors with second banks selected](native-pad-modes.png)
+
+All four selectors and both banks were verified by touch replay on both decks. Touch-only Beat Jump forward/back and four-beat loop on/off also passed. Physical finger testing and the full set of secondary-bank pad actions remain pending.
+
+Touch Slip Loop bank1 (native mode2), pad5 is a one-beat temporary loop. Hold/release and interrupted-reader cleanup were verified on both decks: the loop exited and playback returned to the advancing background position. Exit can complete after the pad-held flag clears; do not treat that flag alone as proof that slipping has ended. All eight first-bank sizes subsequently passed hold/release checks on both decks (see below). Release FX actions in the second bank remain unverified.
+
+## Slip Loop sizes and Release FX bank
+
+Native mode2 has these pad sizes, in row order: 1/16, 1/8, 1/4, 1/2, 1, 2, 1/3 and 3/4 beat. Touch replay verified each size on both playing decks. Measured loop lengths were41,81,162,323,645,1290,215 and484ms at93BPM, within1ms of the expected durations. All16 releases exited slipping and returned playback to within10ms of the advancing background position. This does not replace physical finger testing.
+
+Native mode6 (tap the selected Slip Loop selector again) is **Release FX**, not another set of Slip Loop sizes. Its displayed pads are V.Brake Short, B.Spin Short, Echo Out, Mute, V.Brake Long, B.Spin Long, Build Up and Ducking. These labels were inspected on the running player's framebuffer; Mute was subsequently verified as described below; the other effects remain unverified. The mode selector currently displays Slip Loop with a `2` badge for this bank.
+
+### Release FX Mute
+
+Touch replay on mode6 pad4 (Mute) silences the playing deck while held and restores audio on release. Both decks passed normal release and reader SIGTERM cleanup. Native simulator status changed from -1 to3 and back to -1; sampled output buffers were all zero during the hold and contained changing audio again afterward. Deck1 headphone cue followed the mute; deck2 cue was off, so its headphone behavior was not tested. These trials used one playing deck at a time and do not establish isolation with both decks playing. The remaining seven Release FX actions, physical touch and simultaneous MIDI/touch holds remain open.
+
+## Rejected MIDI presses during a touchscreen hold
+
+The native player refuses a bank change while a touchscreen Slip Loop or Release FX Mute pad is held. Previously, the adapter suppressed the rejected MIDI press but forwarded its later NoteOff. If both inputs used the same pad key, that release ended the touchscreen action early.
+
+`pad-intent.h` now records which tagged MIDI presses the adapter forwarded, by deck, pad and bank. A release requires matching ownership; rejected presses produce no native release. Duplicate presses are suppressed, and a later native bank change prevents an old release from reaching another bank. All ownership changes happen on the FIFO reader thread.
+
+Live before/after tests covered held one-beat Slip Loop and Mute on both decks, with a conflicting Beat Jump MIDI press/release on the same native key. Before the fix, all four MIDI releases ended the touch action early. After the fix, the touch action stayed held until actual touch release, then playback/audio recovered. This does not implement general source ownership when touch and MIDI press the same pad in the same bank; that overlap and physical input testing remain pending.
+
+### Remaining Release FX activation and recovery
+
+Touch replay subsequently exercised short/long brake, short/long backspin, Echo Out, Build Up and Ducking on both decks. Every pad activated its corresponding native simulator status (pad number minus one), cleared it on release, and recovered changing master audio. Short brake and short backspin reached stationary playback positions during the hold; backspin traces moved backward. The long-brake test released before establishing its complete stopping time.
+
+Long backspin can reach the native -2000ms preroll boundary. After release, playback advances through this silent region before music resumes; an immediate audio-presence assertion there is invalid. Read snapshot+620 as signed milliseconds when probing this case. Listening comparison, longer holds, physical fingers, effect combinations and two-deck isolation remain unverified.

@@ -105,12 +105,14 @@ class Doctor:
         else:
             self.ok(f'Python {platform.python_version()}')
         if not self.is_pi_arm:
-            warn(f'This is a {self.machine} computer, not the Raspberry Pi.',
+            warn(f'This is a {self.machine} computer, not a supported ARM board.',
                  'Here you can run ./rx3 recover and the offline tests (./rx3 selftest).\n'
-                 'The player starts only on a Raspberry Pi 5; recovery, assembly and cross-builds\n'
-                 '(64-bit Raspberry Pi OS / Debian). Windows and x86 desktops cannot run it.')
+                 'The player starts only on ARM Linux; recovery, assembly and cross-builds\n'
+                 'can run elsewhere. Windows and x86 desktops cannot run the player directly.')
+        elif 'Orange Pi 4' in model:
+            self.ok(f'Orange Pi 4 family detected ({model})')
         elif 'Raspberry Pi 5' not in model:
-            self.warn(f'Tested only on a Raspberry Pi 5; this is: {model or "unknown hardware"}')
+            self.warn(f'ARM board is not one of the documented targets: {model or "unknown hardware"}')
         else:
             self.ok('Raspberry Pi 5 (the tested model)')
 
@@ -220,9 +222,8 @@ class Doctor:
             page = os.sysconf('SC_PAGE_SIZE')
             if page != 4096:
                 self.fail(f'The kernel uses {page // 1024} KiB memory pages; 32-bit ARM programs need 4 KiB',
-                          'Raspberry Pi 5 boots kernel_2712.img (16 KiB pages) by default. Add the line\n'
-                          '  kernel=kernel8.img\n'
-                          'to /boot/firmware/config.txt (as administrator) and reboot.')
+                          'Boot a 4 KiB-page kernel for this board. On Raspberry Pi 5 this is commonly\n'
+                          'kernel8.img; on Orange Pi use a compatible 4 KiB Armbian/Orange Pi kernel.')
             else:
                 self.ok('4 KiB kernel pages (needed for 32-bit ARM programs)')
         runs = arm32_runs()
@@ -231,8 +232,7 @@ class Doctor:
                 self.ok('This kernel runs 32-bit ARM programs')
             elif runs is False:
                 self.fail('This kernel cannot run 32-bit ARM programs',
-                          'On a Pi 5 use the 4 KiB-page kernel (kernel=kernel8.img in\n'
-                          '/boot/firmware/config.txt) with 64-bit Raspberry Pi OS / Debian.')
+                          'Use a 64-bit Debian/Armbian kernel with CONFIG_COMPAT enabled and 4 KiB pages.')
         elif runs:
             info('32-bit ARM programs run here through emulation (qemu); used only for checks.')
         marker = read_marker(runtime)
@@ -316,16 +316,18 @@ class Doctor:
                  f'({message[-1] if message else "unknown reason"}); ./rx3 start uses sudo instead.')
 
     def device_checks(self):
-        stage('Stage 4 - Raspberry Pi devices for starting RX3')
+        stage('Stage 4 - ARM board devices for starting RX3')
         if not self.is_pi_arm:
-            info('Skipped: these checks only make sense on the Raspberry Pi.')
+            info('Skipped: these checks only make sense on the target ARM board.')
             return
         config = self.config
         # Display
         cards = detect_drm_cards()
+        drm_usable = False
         try:
             drm, how = config.drm_device()
             self.ok(f'Display {drm} ({how})')
+            drm_usable = True
             if not os.access(drm, os.R_OK | os.W_OK):
                 self.fail(f'No permission to use {drm}', 'Add yourself to the video group:\n'
                           '  sudo usermod -aG video,render $USER   (then log out and back in)')
@@ -339,11 +341,13 @@ class Doctor:
             if size.split(',')[:2] == [str(PANEL[0]), str(PANEL[1])] and bpp == '32':
                 self.ok(f'Framebuffer {fb} is {PANEL[0]}x{PANEL[1]} 32-bit')
             else:
-                self.fail(f'Framebuffer {fb} is {size.replace(",", "x")} at {bpp} bits; '
-                          f'{PANEL[0]}x{PANEL[1]} 32-bit is required',
-                          'This checkout is pinned to a 1920x1080 landscape panel (Orange Pi 4 LTS port) - see DISPLAY-PORT-NOTES.md.')
+                report = self.warn if drm_usable else self.fail
+                report(f'Framebuffer fallback {fb} is {size.replace(",", "x")} at {bpp} bits',
+                       'DRM is preferred; fbdev needs 1920x1080 32-bit only when DRM setup fails.')
         except OSError:
-            self.fail(f'Framebuffer {fb} not found', 'The display must be connected at boot.')
+            report = self.warn if drm_usable else self.fail
+            report(f'Framebuffer fallback {fb} not found',
+                   'This is acceptable while the detected DRM device works.')
         if os.path.exists(fb) and not os.access(fb, os.R_OK | os.W_OK):
             self.fail(f'No permission to use {fb}', 'sudo usermod -aG video $USER   (then log in again)')
         if not cards:
@@ -373,11 +377,11 @@ class Doctor:
         else:
             present = ', '.join(cards) or 'none'
             self.fail(f'ALSA card {card} is not connected (present: {present})',
-                      'Connect and power on the DDJ-FLX6, or set [audio] card in rx3.conf.')
-        if card != 'DDJFLX6':
+                      'Connect and power on the DDJ-400, or set [audio] card in rx3.conf.')
+        if card != 'DDJ400':
             self.warn(f'Audio card {card} is untested',
                       'The routing sends master to channels 1/2 and headphones to 3/4 at 44.1 kHz,\n'
-                      'as on the DDJ-FLX6. Other interfaces need that 4-channel layout.')
+                      'as expected for the DDJ-400. Other interfaces need that 4-channel layout.')
         if not ctypes.util.find_library('asound'):
             self.fail('The ALSA library (libasound.so.2) is missing', 'Install: sudo apt install libasound2',
                       'libasound2')
@@ -397,13 +401,27 @@ class Doctor:
             self.warn('Mixxx/BiteDJ is running; stop it before starting RX3 (they share the controller)')
         self.mapping_check()
         self.usb_check()
-        for tool, package in (('sudo', 'sudo'), ('chroot', 'coreutils'), ('findmnt', 'util-linux'),
+        for tool, package in (('sudo', 'sudo'), ('chroot', 'coreutils'), ('prlimit', 'util-linux'),
+                              ('findmnt', 'util-linux'),
                               ('lsblk', 'util-linux'), ('mount', 'mount')):
             if not shutil.which(tool):
                 self.fail(f'{tool} is missing', f'Install: sudo apt install {package}', package)
         if shutil.which('sudo'):
             if subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode == 0:
                 self.ok('sudo works without a prompt')
+                if shutil.which('prlimit'):
+                    realtime = subprocess.run(
+                        ['sudo', '-n', '--', 'prlimit', '--rtprio=95',
+                         '--memlock=unlimited', '--', 'true'],
+                        capture_output=True, text=True)
+                    if realtime.returncode == 0:
+                        self.ok('Player can inherit real-time and locked-memory limits')
+                    else:
+                        detail = (realtime.stderr or realtime.stdout).strip()
+                        self.fail('Cannot grant the player real-time scheduling limits',
+                                  (detail + '\n' if detail else '') +
+                                  'The RX3 player creates SCHED_RR threads; without this it can report\n'
+                                  'UniNo=0x0000000d and then crash. Check sudo/root capabilities.')
             else:
                 info('./rx3 start will ask for your password for the mount/chroot steps.')
         missing_build = [n for n in ('rx3-fb-present', 'rx3-touch-bridge', 'fbshim.so')
@@ -419,12 +437,12 @@ class Doctor:
             return
         if not mapping.is_file():
             self.fail(f'Controller mapping not found: {mapping}',
-                      'Fetch the pinned mapping with ./rx3 mapping, or use your BiteDJ/Mixxx XML.\n'
-                      'Set [controller] mapping in rx3.conf to your Pioneer-DDJ-FLX6.midi.xml.')
+                      'Fetch the pinned mapping with ./rx3 mapping, or use your Mixxx XML.\n'
+                      'Set [controller] mapping in rx3.conf to your Pioneer-DDJ-400.midi.xml.')
             return
         try:
             import importlib.util
-            spec = importlib.util.spec_from_file_location('flx6_rx3', REPO / 'flx6-rx3.py')
+            spec = importlib.util.spec_from_file_location('ddj400_rx3', REPO / 'ddj400-rx3.py')
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             bridge = module.Bridge(str(mapping), lambda *a: None)

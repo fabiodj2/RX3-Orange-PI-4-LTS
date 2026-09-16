@@ -9,6 +9,7 @@ from contextlib import nullcontext
 import platform
 import fcntl
 import os
+import signal
 import shutil
 import signal
 import stat
@@ -306,7 +307,11 @@ class Launcher:
     def player_command(self):
         uid, gid = self.config.uid(), self.config.gid()
         groups = ','.join(str(g) for g in self.config.groups())
-        command = ['chroot', f'--userspec={uid}:{gid}']
+        # The native player creates SCHED_RR threads (observed priority 36).
+        # Set the inherited hard/soft limits while still privileged; limits.conf
+        # is not reliably applied to a sudo chroot --userspec process.
+        command = ['prlimit', '--rtprio=95', '--memlock=unlimited', '--',
+                   'chroot', f'--userspec={uid}:{gid}']
         if groups:
             command.append(f'--groups={groups}')
         return command + [str(self.runtime), '/bin/busybox', 'env', 'LD_PRELOAD=/lib/fbshim.so',
@@ -316,7 +321,7 @@ class Launcher:
         self.require_user()
         self.config.require_valid()
         if platform.machine() not in ('aarch64', 'arm64', 'armv7l', 'armv8l'):
-            raise Failure('Starting RX3 requires an ARM Raspberry Pi; this host can run offline checks only.')
+            raise Failure('Starting RX3 requires a supported ARM Linux board; this host can run offline checks only.')
         if not player_pids(self.runtime) and any(comm == 'rbp-pi' for _, _, _, comm in processes()):
             raise Failure('Another RX3 player is running and cannot be identified as this runtime',
                           'Stop it using its original launcher before starting this installation.')
@@ -391,7 +396,16 @@ class Launcher:
                 time.sleep(.5)
             if player_process.poll() is not None:
                 tail = log_tail(self.logs / 'player.log')
-                raise Failure('The player exited during startup', 'Last lines of the player log:\n' + tail)
+                code = player_process.returncode
+                if code is not None and code < 0:
+                    try:
+                        reason = f'killed by {signal.Signals(-code).name} (signal {-code})'
+                    except ValueError:
+                        reason = f'killed by signal {-code}'
+                else:
+                    reason = f'exit status {code}'
+                raise Failure(f'The player exited during startup ({reason})',
+                              'Last lines of the player log:\n' + tail)
             if usb:
                 self.notify('proc/udev_usb1', b'mount /media/usb1/sda1')
                 if mount_at(self.rt(USB2 + '/Contents')):
