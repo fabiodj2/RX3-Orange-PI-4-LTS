@@ -16,9 +16,9 @@ def wait_for(predicate):
 with tempfile.TemporaryDirectory() as tmp:
  d=Path(tmp);binary=d/'bridge';state=d/'state';control=d/'control';control.touch()
  subprocess.run(['gcc','-O2',f'-DUI_STATE="{state}"',f'-DUI_CONTROL="{control}"','-o',str(binary),str(source/'touch-bridge.c')],check=True)
- def run(mode):
+ def run(mode,flags=()):
   out=d/mode;out.touch()
-  p=subprocess.Popen([str(binary),'--replay',str(out),'--fullscreen'],stdin=subprocess.PIPE,stderr=subprocess.PIPE)
+  p=subprocess.Popen([str(binary),'--replay',str(out),'--fullscreen',*flags],stdin=subprocess.PIPE,stderr=subprocess.PIPE)
   def reports():
    raw=out.read_bytes();return [REPORT.unpack_from(raw,i) for i in range(0,len(raw)-5,6)]
   try:
@@ -38,9 +38,14 @@ with tempfile.TemporaryDirectory() as tmp:
    assert all(x[0]==0 for x in packets[-10:]),packets[-10:]
    assert any(x[0]==1 for x in packets)
    print('PASS',mode,'releases active native touch')
+   return next(x[2:] for x in packets if x[0])
   finally:
    if p.poll() is None:p.kill();p.wait()
- for mode in ('eof','term','dropped'):run(mode)
+ base=run('eof')
+ for mode in ('term','dropped'):run(mode)
+ for name,flag in (('swap','--swap-xy'),('invert-x','--invert-x'),('invert-y','--invert-y')):
+  transformed=run(name,(flag,))
+  assert transformed!=base,(flag,base,transformed)
  out=d/'absent-out';out.touch()
  p=subprocess.Popen([str(binary),str(d/'missing-device'),str(out),'--fullscreen'],stderr=subprocess.PIPE)
  try:

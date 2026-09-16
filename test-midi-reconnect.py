@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Exercise the real parser and recovery loop with a failing ALSA transport."""
+"""Exercise the DDJ-400 parser and recovery loop with a failing ALSA transport."""
 import ctypes
 import errno
 import importlib.util
 import tempfile
 from pathlib import Path
-spec=importlib.util.spec_from_file_location('midi',Path(__file__).with_name('flx6-rx3.py'))
+spec=importlib.util.spec_from_file_location('midi',Path(__file__).with_name('ddj400-rx3.py'))
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 with tempfile.TemporaryDirectory() as d:
  p=Path(d)/'map.xml';p.write_text('<root/>')

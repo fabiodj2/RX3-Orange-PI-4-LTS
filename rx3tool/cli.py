@@ -105,7 +105,7 @@ def main(argv=None):
     assemble = command('assemble', 'create or repair the RX3 runtime directory from the recovered images')
     assemble.add_argument('--repair', action='store_true', help='rewrite every firmware file')
     assemble.add_argument('--dry-run', action='store_true')
-    m = command('mapping', 'fetch the pinned public FLX6 mapping, or check your configured XML')
+    m = command('mapping', 'fetch the pinned public DDJ-400 mapping, or check your configured XML')
     m.add_argument('--offline', action='store_true')
     m.add_argument('--dry-run', action='store_true')
     b = command('build', 'build the display/touch helpers and the 32-bit player shim')

@@ -45,8 +45,15 @@ static void release_inputs(struct finger *fingers,int out,int native_held,int ux
 static void retry_pause(void){for(int i=0;i<20&&running;i++)usleep(50000);}
 int main(int argc,char**argv){
  if(argc<3)return 2;
- int fullscreen=0,exclusive=0;
- for(int i=3;i<argc;i++){if(!strcmp(argv[i],"--fullscreen"))fullscreen=1;else if(!strcmp(argv[i],"--exclusive"))exclusive=1;else return 2;}
+ int fullscreen=0,exclusive=0,swap_xy=0,invert_x=0,invert_y=0;
+ for(int i=3;i<argc;i++){
+  if(!strcmp(argv[i],"--fullscreen"))fullscreen=1;
+  else if(!strcmp(argv[i],"--exclusive"))exclusive=1;
+  else if(!strcmp(argv[i],"--swap-xy"))swap_xy=1;
+  else if(!strcmp(argv[i],"--invert-x"))invert_x=1;
+  else if(!strcmp(argv[i],"--invert-y"))invert_y=1;
+  else return 2;
+ }
  int replay=!strcmp(argv[1],"--replay");int in=-1,out=open(argv[2],O_RDWR|O_NONBLOCK);control=open(ui_control_path(),O_RDWR|O_NONBLOCK);
  if(out<0||control<0){perror("open");return 1;}
  int sf=open(ui_state_path(),O_RDWR|O_CREAT,0600);if(sf<0||ftruncate(sf,sizeof(struct ui_state)))return 1;
@@ -76,7 +83,13 @@ int main(int argc,char**argv){
  }
  long now=millis();
  for(int i=0;i<10;i++){
-  struct finger*f=&fingers[i];int lx=(f->x-ax.minimum)*1920/(ax.maximum-ax.minimum+1),ly=(f->y-ay.minimum)*1080/(ay.maximum-ay.minimum+1);
+  struct finger*f=&fingers[i];
+  int nx=(f->x-ax.minimum)*65535/(ax.maximum-ax.minimum+1);
+  int ny=(f->y-ay.minimum)*65535/(ay.maximum-ay.minimum+1);
+  if(nx<0)nx=0;if(nx>65535)nx=65535;if(ny<0)ny=0;if(ny>65535)ny=65535;
+  if(swap_xy){int n=nx;nx=ny;ny=n;}
+  if(invert_x)nx=65535-nx;if(invert_y)ny=65535-ny;
+  int lx=nx*1920/65536,ly=ny*1080/65536;
   if(lx<0)lx=0;if(lx>1919)lx=1919;if(ly<0)ly=0;if(ly>1079)ly=1079;
   if(f->down&&!f->active){f->active=1;f->region=-1;
    if(fullscreen){if(source<0){source=i;f->region=0;}}

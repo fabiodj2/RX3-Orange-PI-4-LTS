@@ -11,7 +11,6 @@ import fcntl
 import os
 import signal
 import shutil
-import signal
 import stat
 import struct
 import subprocess
@@ -304,6 +303,27 @@ class Launcher:
                                        env=dict(os.environ, **(env or {})), cwd=str(self.state))
         return process
 
+    def rollback_spawned(self, processes, release_mounts=True):
+        """Stop only children created by this start attempt, then release mounts."""
+        for process in reversed([p for p in processes if p is not None]):
+            if process.poll() is not None:
+                continue
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=3)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                if process.poll() is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        if release_mounts:
+            try:
+                self.unmount_all()
+            except (Failure, OSError, subprocess.SubprocessError) as error:
+                warn(f'Automatic startup cleanup was incomplete: {error}',
+                     'Run ./rx3 stop before retrying.')
+
     def player_command(self):
         uid, gid = self.config.uid(), self.config.gid()
         groups = ','.join(str(g) for g in self.config.groups())
@@ -351,6 +371,7 @@ class Launcher:
         drm, drm_how, touch, touch_how, mapping = self.preflight()
         with self.lock():
             running = self.helpers()
+            spawned = []
             new_player = not running['player']
             usb = False
             if new_player:
@@ -363,25 +384,31 @@ class Launcher:
                 if not self.dry_run:
                     self.ensure_sudo()
                 player_process = self.spawn('player', ['sudo', '-n', '--'] + self.player_command())
+                spawned.append(player_process)
             else:
                 ok(f"Player already running (process {running['player'][0]})")
             env = {'RX3_RUNTIME': str(self.runtime), 'RX3_DRM_DEVICE': drm,
                    'RX3_FB_DEVICE': self.config.get('display', 'fb_device')}
             if not running['display']:
                 info(f'Display: {drm} ({drm_how})')
-                self.spawn('display', [self.build / 'rx3-fb-present', self.rt('dev/fb0'),
-                                       '--fullscreen', '--coherent'], env)
+                spawned.append(self.spawn('display', [self.build / 'rx3-fb-present', self.rt('dev/fb0'),
+                                                       '--fullscreen', '--coherent'], env))
             if not running['touch']:
                 info(f'Touch: {touch} ({touch_how})')
-                self.spawn('touch', [self.build / 'rx3-touch-bridge', touch,
-                                     self.rt('dev/tsc2007_2-0048'), '--fullscreen'], env)
+                touch_command = [self.build / 'rx3-touch-bridge', touch,
+                                 self.rt('dev/tsc2007_2-0048'), '--fullscreen']
+                for key, option in (('swap_xy', '--swap-xy'), ('invert_x', '--invert-x'),
+                                    ('invert_y', '--invert-y')):
+                    if self.config.flag('touch', key):
+                        touch_command.append(option)
+                spawned.append(self.spawn('touch', touch_command, env))
             if not running['midi']:
-                self.spawn('midi', [sys.executable, REPO / 'ddj400-rx3.py', '--mapping', mapping,
+                spawned.append(self.spawn('midi', [sys.executable, REPO / 'ddj400-rx3.py', '--mapping', mapping,
                                     '--fifo', self.rt('dev/rx3-control'),
                                     '--state', self.state / 'midi-jog-state.json',
                                     '--port-name', self.config.get('controller', 'midi_name'),
                                     '--player-id', ('dry-run' if self.dry_run else str(player_process.pid)
-                                                    if new_player else str(running['player'][0]))], env)
+                                                    if new_player else str(running['player'][0]))], env))
             if self.dry_run:
                 return
             if not new_player:
@@ -404,6 +431,7 @@ class Launcher:
                         reason = f'killed by signal {-code}'
                 else:
                     reason = f'exit status {code}'
+                self.rollback_spawned(spawned, release_mounts=new_player)
                 raise Failure(f'The player exited during startup ({reason})',
                               'Last lines of the player log:\n' + tail)
             if usb:
@@ -412,6 +440,7 @@ class Launcher:
                     self.notify('proc/udev_usb2', b'mount /media/usb2/sdb1')
             missing = [kind for kind, pids in self.helpers().items() if kind != 'player' and not pids]
             if missing:
+                self.rollback_spawned(spawned, release_mounts=new_player)
                 raise Failure('Helpers exited: ' + ', '.join(missing),
                               f'Inspect logs in {self.logs}; run ./rx3 stop before retrying.')
             stage('RX3 is running')

@@ -125,6 +125,16 @@ Recovery reuses verified files and resumes partial downloads. Assembly recognize
 
 `./rx3 setup --dry-run` prints the plan without downloading, building, mounting or starting. `./rx3 selftest` runs offline synthetic, replay and C tests; it needs the Python/build dependencies but no firmware or Pi. Every command has `--help`.
 
+If touch is rotated or mirrored, keep the detected device and set one or more
+of `touch.swap_xy`, `touch.invert_x` and `touch.invert_y` to `yes` in
+`rx3.conf`. Test all four corners after each change; no C source edit is needed.
+
+The device stage of `./rx3 doctor` now performs two active but non-destructive
+capability probes: it opens the configured audio endpoint without playing sound
+to require four-channel 44.1 kHz S16_LE output, and it actually enters
+`SCHED_RR` after dropping to the configured player UID. A successful `prlimit`
+command alone is not considered proof of real-time scheduling support.
+
 ## Troubleshooting
 
 | Symptom | Next step |

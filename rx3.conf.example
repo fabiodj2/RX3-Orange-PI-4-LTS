@@ -43,6 +43,11 @@ fb_device = /dev/fb0
 #   ls -l /dev/input/by-path/
 # device = /dev/input/by-path/platform-1f00080000.i2c-event
 device = auto
+# Correct rotated or mirrored touch without editing touch-bridge.c.
+# Test the four corners first; change only the axes that are wrong.
+swap_xy = no
+invert_x = no
+invert_y = no
 
 [audio]
 # ALSA card ID (see: cat /proc/asound/cards). Confirm the ID on your DDJ-400.

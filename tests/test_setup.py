@@ -14,6 +14,7 @@ from rx3tool.cli import main
 from rx3tool.cramfs import Image, MAGIC
 from rx3tool.launch import Launcher, USB1, USB2
 from rx3tool.mapping import ensure
+from rx3tool.doctor import realtime_probe_command
 from rx3tool.recover import Recovery
 from rx3tool.safefs import Tree
 from rx3tool.ui import Failure
@@ -53,7 +54,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(main(['--config', str(target), 'config', 'init']), 1)
 
     def test_bad_config_does_not_start(self):
-        for setting in ('paths.runtime=/', 'firmware.version=1.20', 'user.uid=0', 'audio.card=bad;command'):
+        for setting in ('paths.runtime=/', 'firmware.version=1.20', 'user.uid=0',
+                        'audio.card=bad;command', 'touch.swap_xy=maybe'):
             with self.subTest(setting=setting):
                 self.assertTrue(config.load(self.conf, [setting], env={}).validate())
 
@@ -121,6 +123,35 @@ class SetupTests(unittest.TestCase):
                          ['prlimit', '--rtprio=95', '--memlock=unlimited', '--', 'chroot'])
         self.assertTrue(any(arg.startswith('--userspec=') for arg in command))
         self.assertIn('LD_PRELOAD=/lib/fbshim.so', command)
+
+    def test_realtime_probe_drops_identity_before_entering_scheduler(self):
+        command = realtime_probe_command(self.cfg)
+        self.assertEqual(command[:7], ['sudo', '-n', '--', 'prlimit', '--rtprio=95',
+                                      '--memlock=unlimited', '--'])
+        self.assertIn('setpriv', command)
+        self.assertTrue(any(arg.startswith('--reuid=') for arg in command))
+        self.assertIn('os.sched_setscheduler', command[-1])
+
+    def test_failed_player_start_rolls_back_spawned_helpers(self):
+        from unittest.mock import MagicMock
+        c = config.load(self.conf, ['controller.mapping=map.xml'], env={})
+        launch = Launcher(c)
+        player = MagicMock(); player.poll.return_value = -11; player.returncode = -11
+        helper = MagicMock(); helper.poll.return_value = None
+        stopped = {k: [] for k in ('player', 'display', 'touch', 'midi')}
+        with patch.object(launch, 'preflight', return_value=('/dev/dri/card0', 'test',
+                          '/dev/input/event0', 'test', self.root / 'map.xml')), \
+             patch.object(launch, 'prepare_mounts', return_value=False), \
+             patch.object(launch, 'helpers', return_value=stopped), \
+             patch.object(launch, 'ensure_sudo'), \
+             patch.object(launch, 'spawn', side_effect=[player, helper, helper, helper]), \
+             patch.object(launch, 'rollback_spawned') as rollback, \
+             patch('rx3tool.launch.Tree'), patch('rx3tool.launch.log_tail', return_value='crash'), \
+             patch('rx3tool.launch.player_pids', return_value=[]):
+            with self.assertRaisesRegex(Failure, 'SIGSEGV'):
+                launch.start()
+        rollback.assert_called_once()
+        self.assertEqual(len(rollback.call_args.args[0]), 4)
 
     def test_unknown_player_and_other_midi_are_not_stopped(self):
         processes = [(123, 1000, ['rbp-pi'], 'rbp-pi')]

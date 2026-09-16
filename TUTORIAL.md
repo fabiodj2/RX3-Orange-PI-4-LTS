@@ -150,6 +150,12 @@ Confira o resultado:
 ./rx3 doctor
 ```
 
+O diagnóstico precisa mostrar tanto o perfil ALSA de quatro canais quanto
+`Player user actually enters SCHED_RR`. Se o segundo teste falhar, não inicie o
+player: o log anterior mostrou `sched_setscheduler(...)=EPERM` imediatamente
+antes da sequência de falha. O teste agora é feito após a troca para o UID do
+player, não apenas como root.
+
 Isso confere tudo: firmware, build, runtime, dispositivos (display, touch,
 áudio, MIDI). Resolva qualquer `FAIL` antes de seguir. Pontos que exigem
 atenção especial no seu caso:

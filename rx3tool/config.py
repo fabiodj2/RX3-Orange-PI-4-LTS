@@ -47,6 +47,9 @@ DEFAULTS = {
     },
     'touch': {
         'device': 'auto',
+        'swap_xy': 'no',
+        'invert_x': 'no',
+        'invert_y': 'no',
     },
     'audio': {
         'card': 'DDJ400',  # confirme com: cat /proc/asound/cards (ver DISPLAY-PORT-NOTES.md/tutorial)
@@ -174,6 +177,8 @@ class Config:
         touch = self.get('touch', 'device')
         if touch != 'auto' and not touch.startswith('/dev/input/'):
             problems.append('[touch] device must be auto or a path under /dev/input/')
+        for key in ('swap_xy', 'invert_x', 'invert_y'):
+            check(lambda key=key: self.flag('touch', key))
         card = self.get('audio', 'card')
         if not ALSA_ID.match(card):
             problems.append(f'[audio] card must be an ALSA card ID (letters, digits, _; max 15), '

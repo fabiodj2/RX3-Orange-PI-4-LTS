@@ -1,8 +1,9 @@
-"""./rx3 doctor: read-only checks with concrete fixes, grouped by setup stage.
+"""./rx3 doctor: non-destructive checks with concrete fixes, grouped by setup stage.
 
-Nothing here changes the system: it reads /proc, /sys and the configuration,
-runs compilers on temporary files, and executes a 32-bit ARM probe program.
+Nothing here persists a system change: it reads /proc, /sys and configuration,
+runs temporary probes, briefly opens audio, and tests a disposable SCHED_RR process.
 """
+import ctypes
 import ctypes.util
 import os
 import platform
@@ -26,6 +27,62 @@ DESKTOPS = {'Xorg', 'Xwayland', 'labwc', 'wayfire', 'weston', 'sway', 'gnome-she
             'cage', 'mutter', 'Hyprland'}
 AUDIO_SERVERS = {'pipewire', 'pulseaudio', 'wireplumber', 'jackd'}
 FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+
+
+def alsa_playback_probe(card):
+    """Open the playback endpoint nonblocking and query the required profile."""
+    name = f'hw:CARD={card},DEV=0'.encode()
+    try:
+        lib = ctypes.CDLL('libasound.so.2')
+        pcm, params = ctypes.c_void_p(), ctypes.c_void_p()
+        lib.snd_pcm_open.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_char_p,
+                                     ctypes.c_int, ctypes.c_int]
+        lib.snd_pcm_open.restype = ctypes.c_int
+        lib.snd_pcm_hw_params_malloc.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        lib.snd_pcm_hw_params_malloc.restype = ctypes.c_int
+        lib.snd_pcm_hw_params_any.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.snd_pcm_hw_params_any.restype = ctypes.c_int
+        lib.snd_pcm_hw_params_test_channels.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                                        ctypes.c_uint]
+        lib.snd_pcm_hw_params_test_channels.restype = ctypes.c_int
+        lib.snd_pcm_hw_params_test_rate.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                                    ctypes.c_uint, ctypes.c_int]
+        lib.snd_pcm_hw_params_test_rate.restype = ctypes.c_int
+        lib.snd_pcm_hw_params_test_format.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                                      ctypes.c_int]
+        lib.snd_pcm_hw_params_test_format.restype = ctypes.c_int
+        lib.snd_pcm_hw_params_free.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_close.argtypes = [ctypes.c_void_p]
+        result = lib.snd_pcm_open(ctypes.byref(pcm), name, 0, 1)
+        if result < 0:
+            return False, f'cannot open {name.decode()} ({result})'
+        try:
+            if lib.snd_pcm_hw_params_malloc(ctypes.byref(params)) < 0:
+                return False, 'cannot allocate ALSA hardware parameters'
+            try:
+                if lib.snd_pcm_hw_params_any(pcm, params) < 0:
+                    return False, 'cannot query ALSA hardware parameters'
+                checks = (
+                    ('four playback channels', lib.snd_pcm_hw_params_test_channels(pcm, params, 4)),
+                    ('44.1 kHz playback', lib.snd_pcm_hw_params_test_rate(pcm, params, 44100, 0)),
+                    ('S16_LE playback', lib.snd_pcm_hw_params_test_format(pcm, params, 2)),
+                )
+                failed = [label for label, code in checks if code < 0]
+                return (not failed, ', '.join(failed) if failed else '4 channels, 44.1 kHz, S16_LE')
+            finally:
+                lib.snd_pcm_hw_params_free(params)
+        finally:
+            lib.snd_pcm_close(pcm)
+    except (AttributeError, OSError) as error:
+        return False, str(error)
+
+
+def realtime_probe_command(config):
+    """Mirror player privilege dropping, then actually enter SCHED_RR."""
+    script = 'import os; os.sched_setscheduler(0, os.SCHED_RR, os.sched_param(1))'
+    return ['sudo', '-n', '--', 'prlimit', '--rtprio=95', '--memlock=unlimited', '--',
+            'setpriv', f'--reuid={config.uid()}', f'--regid={config.gid()}', '--clear-groups',
+            sys.executable, '-c', script]
 
 
 def arm32_probe_elf():
@@ -374,6 +431,12 @@ class Doctor:
         cards = alsa_cards()
         if card in cards:
             self.ok(f"ALSA card {card}: {cards[card]['description']}")
+            supported, detail = alsa_playback_probe(card)
+            if supported:
+                self.ok(f'ALSA playback capabilities: {detail}')
+            else:
+                self.fail(f'ALSA card {card} does not satisfy the RX3 output profile',
+                          detail + '\nThe DDJ-400 must be free and expose four-channel 44.1 kHz S16_LE playback.')
         else:
             present = ', '.join(cards) or 'none'
             self.fail(f'ALSA card {card} is not connected (present: {present})',
@@ -402,6 +465,7 @@ class Doctor:
         self.mapping_check()
         self.usb_check()
         for tool, package in (('sudo', 'sudo'), ('chroot', 'coreutils'), ('prlimit', 'util-linux'),
+                              ('setpriv', 'util-linux'),
                               ('findmnt', 'util-linux'),
                               ('lsblk', 'util-linux'), ('mount', 'mount')):
             if not shutil.which(tool):
@@ -409,19 +473,17 @@ class Doctor:
         if shutil.which('sudo'):
             if subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode == 0:
                 self.ok('sudo works without a prompt')
-                if shutil.which('prlimit'):
-                    realtime = subprocess.run(
-                        ['sudo', '-n', '--', 'prlimit', '--rtprio=95',
-                         '--memlock=unlimited', '--', 'true'],
-                        capture_output=True, text=True)
+                if shutil.which('prlimit') and shutil.which('setpriv'):
+                    realtime = subprocess.run(realtime_probe_command(self.config),
+                                              capture_output=True, text=True, timeout=10)
                     if realtime.returncode == 0:
-                        self.ok('Player can inherit real-time and locked-memory limits')
+                        self.ok('Player user actually enters SCHED_RR with inherited limits')
                     else:
                         detail = (realtime.stderr or realtime.stdout).strip()
                         self.fail('Cannot grant the player real-time scheduling limits',
                                   (detail + '\n' if detail else '') +
                                   'The RX3 player creates SCHED_RR threads; without this it can report\n'
-                                  'UniNo=0x0000000d and then crash. Check sudo/root capabilities.')
+                                  'UniNo=0x0000000d and then crash. Check limits/cgroup/kernel policy.')
             else:
                 info('./rx3 start will ask for your password for the mount/chroot steps.')
         missing_build = [n for n in ('rx3-fb-present', 'rx3-touch-bridge', 'fbshim.so')
@@ -446,7 +508,13 @@ class Doctor:
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             bridge = module.Bridge(str(mapping), lambda *a: None)
-            self.ok(f'Controller mapping loads: {len(bridge.mapping)} bindings from {mapping}')
+            from .mapping import MIN_BINDINGS
+            if len(bridge.mapping) < MIN_BINDINGS:
+                self.fail(f'Controller mapping is incomplete: {len(bridge.mapping)} bindings',
+                          f'The complete mapping has at least {MIN_BINDINGS}. Move {mapping} aside,\n'
+                          'then run ./rx3 mapping to fetch the pinned DDJ-400 XML.')
+            else:
+                self.ok(f'Controller mapping loads: {len(bridge.mapping)} bindings from {mapping}')
         except Exception as error:  # a bad user file must not crash doctor
             self.fail(f'Controller mapping could not be read: {error}')
 

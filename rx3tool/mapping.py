@@ -12,6 +12,7 @@ from .ui import Failure, ok, say
 URL = ('https://raw.githubusercontent.com/mixxxdj/mixxx/'
        '6ff4e36eec76a0b3d66316dd8bad6155833b6ae6/res/controllers/Pioneer-DDJ-400.midi.xml')
 SHA256 = 'f3de2ecb02869f2aaf89101c138efa3c1f1b7357655ca20f705d2636ec4306ee'
+MIN_BINDINGS = 100
 
 
 def ensure(config, offline=False, dry_run=False):
@@ -36,6 +37,8 @@ def ensure(config, offline=False, dry_run=False):
         bridge = module.Bridge(str(target), lambda *a: None)
     except Exception as error:
         raise Failure(f'Cannot load controller mapping {target}: {error}')
-    if not bridge.mapping:
-        raise Failure(f'No supported DDJ-400 bindings found in {target}')
+    if len(bridge.mapping) < MIN_BINDINGS:
+        raise Failure(f'Only {len(bridge.mapping)} supported DDJ-400 bindings found in {target}',
+                      f'The complete pinned mapping provides at least {MIN_BINDINGS}. Move this old or\n'
+                      'custom XML aside and run ./rx3 mapping again.')
     ok(f'Controller mapping: {len(bridge.mapping)} bindings from {target}')
